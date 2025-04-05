@@ -11,9 +11,9 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-# Environment-Label aus Umgebungsvariablen abrufen
-environment_label = os.getenv("ENV_LABEL", "Default Environment")
-return f"<h1>Welcome to {environment_label}!</h1><p>Running on port {args.port}, Oliver</p>"
+  # Environment-Label aus Umgebungsvariablen abrufen
+  environment_label = os.getenv("ENV_LABEL", "Default Environment")
+  return f"<h1>Welcome to {environment_label}!</h1><p>Running on port {args.port}, Oliver</p>"
 
 if __name__ == "__main__":
-app.run(host="0.0.0.0", port=args.port)
+  app.run(host="0.0.0.0", port=args.port)
