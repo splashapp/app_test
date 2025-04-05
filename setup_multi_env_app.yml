@@ -32,9 +32,10 @@
   tasks:
 
       # Step 5 (Optional): Configure Ansible to use the virtual environment's Python interpreter
-    - name: Set ansible_python_interpreter to virtual environment's Python
+    - name: Set ansible_python_interpreter based on environment
       set_fact:
-        ansible_python_interpreter: "/Users/oruess/python_venv/bin/python"
+        ansible_python_interpreter: "{% if ansible_system == 'Darwin' %}/Users/oruess/python_venv/bin/python{% else %}auto{% endif %}"
+
 
     # Other tasks remain unchanged...
 
