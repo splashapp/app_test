@@ -58,11 +58,5 @@ pipeline {
         failure {
             echo 'Deployment fehlgeschlagen!'
         }
-<<<<<<< HEAD
-=======
-        always {
-            echo 'Pipeline abgeschlossen.'
-        }
->>>>>>> b55dd16 (Jenkins included)
     }
 }

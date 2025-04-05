@@ -1,0 +1,170 @@
+---
+- name: Configure Jenkins Pipeline for App_Test
+  hosts: all
+  become: false
+  
+  vars:
+    jenkins_url: "http://localhost:8080"
+    jenkins_user: "admin"  # Ihr Jenkins-Benutzername
+    jenkins_api_token: "{{ jenkins_api_token | default('') }}"  # Wird über --extra-vars übergeben
+    app_repo: "git@github.com:splashapp/app_test.git"
+    ssh_key_path: "~/.ssh/id_rsa"
+    
+  tasks:
+    # Überprüfen, ob Jenkins läuft
+    - name: Überprüfe Jenkins-Status
+      uri:
+        url: "{{ jenkins_url }}"
+        method: GET
+        status_code: 200
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_api_token }}"
+        force_basic_auth: yes
+        validate_certs: no
+      register: jenkins_status
+      ignore_errors: yes
+      
+    - name: Stelle sicher, dass Jenkins mit Authentifizierung erreichbar ist
+      debug:
+        msg: "Jenkins ist erreichbar unter {{ jenkins_url }} und die Authentifizierung war erfolgreich"
+      when: jenkins_status.status is defined and jenkins_status.status == 200
+      
+    - name: Warne, wenn Jenkins nicht erreichbar ist oder die Authentifizierung fehlschlägt
+      debug:
+        msg: >
+          Jenkins ist entweder nicht erreichbar oder die Authentifizierung schlägt fehl.
+          Status: {{ jenkins_status.status | default('unbekannt') }}
+          Antwort: {{ jenkins_status.msg | default('keine Nachricht') }}
+      when: jenkins_status.status is not defined or jenkins_status.status != 200
+      
+    # Jenkins CLI herunterladen
+    - name: Lade Jenkins CLI JAR herunter
+      get_url:
+        url: "{{ jenkins_url }}/jnlpJars/jenkins-cli.jar"
+        dest: /tmp/jenkins-cli.jar
+        mode: '0644'
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_api_token }}"
+        force_basic_auth: yes
+        validate_certs: no
+      register: download_cli
+      ignore_errors: yes
+        
+    # SSH-Key für Git einrichten
+    - name: Prüfe, ob SSH-Key existiert
+      stat:
+        path: "{{ ssh_key_path }}"
+      register: ssh_key_file
+      
+    - name: Erstelle Jenkins Credentials XML für SSH-Key
+      template:
+        src: templates/ssh_credentials.xml.j2
+        dest: /tmp/ssh_credentials.xml
+      vars:
+        ssh_key_content: "{{ lookup('file', ssh_key_path) }}"
+      when: ssh_key_file.stat.exists
+        
+    - name: Erstelle SSH-Credential in Jenkins
+      shell: >
+        java -jar /tmp/jenkins-cli.jar -s {{ jenkins_url }} 
+        -auth {{ jenkins_user }}:{{ jenkins_api_token }}
+        create-credentials-by-xml system::system::jenkins _
+        < /tmp/ssh_credentials.xml
+      when: ssh_key_file.stat.exists and download_cli is success
+      ignore_errors: yes
+      register: create_credentials
+      
+    - name: Zeige Ergebnis der Credential-Erstellung
+      debug:
+        msg: "{{ create_credentials.stdout | default('Keine Ausgabe') }} {{ create_credentials.stderr | default('') }}"
+      when: create_credentials is defined
+      
+    # Jenkins-Job für App_Test erstellen
+    - name: Erstelle Job-Konfiguration
+      template:
+        src: templates/app_test_job.xml.j2
+        dest: /tmp/app_test_job.xml
+        
+    - name: Prüfe, ob Job bereits existiert
+      uri:
+        url: "{{ jenkins_url }}/job/App_Test_Pipeline/api/json"
+        method: GET
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_api_token }}"
+        force_basic_auth: yes
+        status_code: [200, 404]
+        validate_certs: no
+      register: job_check
+      ignore_errors: yes
+      
+    - name: Erstelle Jenkins-Job, falls er nicht existiert
+      shell: >
+        java -jar /tmp/jenkins-cli.jar -s {{ jenkins_url }}
+        -auth {{ jenkins_user }}:{{ jenkins_api_token }}
+        create-job App_Test_Pipeline < /tmp/app_test_job.xml
+      when: job_check.status is defined and job_check.status == 404 and download_cli is success
+      ignore_errors: yes
+      register: create_job
+      
+    - name: Aktualisiere Jenkins-Job, falls er bereits existiert
+      shell: >
+        java -jar /tmp/jenkins-cli.jar -s {{ jenkins_url }}
+        -auth {{ jenkins_user }}:{{ jenkins_api_token }}
+        update-job App_Test_Pipeline < /tmp/app_test_job.xml
+      when: job_check.status is defined and job_check.status == 200 and download_cli is success
+      ignore_errors: yes
+      register: update_job
+      
+    - name: Zeige Ergebnis der Job-Erstellung/Aktualisierung
+      debug:
+        msg: >
+          {{ create_job.stdout | default('') }} {{ create_job.stderr | default('') }}
+          {{ update_job.stdout | default('') }} {{ update_job.stderr | default('') }}
+      when: create_job is defined or update_job is defined
+      
+    # Jenkinsfile-Template ins Repo kopieren, falls gewünscht
+    - name: Frage, ob Jenkinsfile ins Repository kopiert werden soll
+      pause:
+        prompt: "Möchten Sie ein Jenkinsfile-Template in Ihr Repository kopieren? (ja/nein)"
+      register: copy_jenkinsfile
+      
+    - name: Klone temporär das Repository
+      git:
+        repo: "{{ app_repo }}"
+        dest: /tmp/app_test_repo
+        accept_hostkey: yes
+      when: copy_jenkinsfile.user_input | default('nein') | lower == 'ja'
+      ignore_errors: yes
+      
+    - name: Kopiere Jenkinsfile ins Repository
+      template:
+        src: templates/Jenkinsfile.j2
+        dest: /tmp/app_test_repo/Jenkinsfile
+      when: copy_jenkinsfile.user_input | default('nein') | lower == 'ja'
+      
+    - name: Commit und Push Jenkinsfile
+      shell: |
+        cd /tmp/app_test_repo
+        git add Jenkinsfile
+        git commit -m "Jenkins Pipeline hinzugefügt"
+        git push
+      when: copy_jenkinsfile.user_input | default('nein') | lower == 'ja'
+      ignore_errors: yes
+      
+    # Aufräumen
+    - name: Lösche temporäre Dateien
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /tmp/ssh_credentials.xml
+        - /tmp/app_test_job.xml
+      ignore_errors: yes
+      
+    - name: Stelle Anweisungen für nächste Schritte bereit
+      debug:
+        msg:
+          - "Jenkins-Konfiguration ist abgeschlossen."
+          - "Die Pipeline kann unter {{ jenkins_url }}/job/App_Test_Pipeline/ aufgerufen werden."
+          - "Stellen Sie sicher, dass das Jenkinsfile im Root-Verzeichnis Ihres Repositories existiert."
+          - "Führen Sie bei Bedarf den Build manuell aus, indem Sie auf 'Build Now' klicken."

@@ -1,0 +1,288 @@
+---
+- name: Install Python 3 and Jenkins on macOS
+  hosts: all
+  become: false
+
+  tasks:
+    # 1. Ensure Homebrew is installed
+    - name: Check if Homebrew is installed
+      command: brew --version
+      register: brew_check
+      failed_when: brew_check.rc != 0
+      changed_when: false
+
+    - name: Install Homebrew if not installed
+      command: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      when: brew_check.rc != 0
+
+    # 2. Update Homebrew
+    - name: Update Homebrew
+      command: brew update
+      become: false
+      changed_when: true
+
+    # 3. Install Python 3 using Homebrew
+    - name: Check if Python 3 is installed
+      command: python3 --version
+      register: python_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Install Python 3
+      command: brew install python
+      become: false
+      when: python_check.rc != 0
+
+    # 4. Verify Python installation
+    - name: Check Python version
+      command: python3 --version
+      changed_when: false
+
+    # Step 1: Ensure venv module is available
+    - name: Check if venv module is available
+      ansible.builtin.command:
+        cmd: python3 -m venv --help
+      register: venv_check
+      failed_when: "'usage:' not in venv_check.stdout"
+      changed_when: false
+
+    # Step 2: Create a virtual environment
+    - name: Check if Python virtual environment exists
+      stat:
+        path: ~/python_venv/bin/activate
+      register: venv_exists
+      changed_when: false
+
+    - name: Create a Python virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv ~/python_venv
+      when: not venv_exists.stat.exists
+
+    # Step 3: Upgrade pip in the virtual environment
+    - name: Upgrade pip in the virtual environment
+      ansible.builtin.command:
+        cmd: ~/python_venv/bin/pip install --upgrade pip
+      changed_when: true
+
+    # Step 4: Install required libraries in the virtual environment
+    - name: Install requests and packaging libraries in the virtual environment
+      ansible.builtin.command:
+        cmd: ~/python_venv/bin/pip install requests packaging
+      changed_when: true
+
+    # Step 5 (Optional): Verify installation of requests and packaging
+    - name: Verify requests installation
+      ansible.builtin.command:
+        cmd: ~/python_venv/bin/python -c "import requests; print(requests.__version__)"
+      changed_when: false
+
+    - name: Verify packaging installation
+      ansible.builtin.command:
+        cmd: ~/python_venv/bin/python -c "import packaging; print(packaging.__version__)"
+      changed_when: false
+
+    # Step 6: Check if Docker is installed
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+
+    # Step 7: Install Docker using Homebrew
+    - name: Install Docker via Homebrew
+      homebrew_cask:
+        name: docker
+        state: present
+      when: docker_check.rc != 0
+
+    # Step 8: Check if Docker Desktop is running
+    - name: Check if Docker Desktop is running
+      shell: pgrep -f Docker
+      register: docker_running
+      ignore_errors: yes
+      changed_when: false
+
+    # Step 9: Start Docker Desktop application (if not running)
+    - name: Start Docker Desktop application
+      command: open -a Docker
+      when: docker_running.rc != 0
+
+    # Step 10: Verify Docker installation
+    - name: Check Docker version
+      command: docker --version
+      changed_when: false
+      
+    # Jenkins Installation Steps
+    
+    # Step 11: Check if Java is installed
+    - name: Check if Java is installed
+      command: java -version
+      register: java_check
+      ignore_errors: yes
+      changed_when: false
+    
+    # Step 12: Install Java (required for Jenkins)
+    - name: Install OpenJDK using Homebrew
+      homebrew:
+        name: openjdk
+        state: present
+      when: java_check.rc != 0
+      
+    - name: Check if Java symlink exists
+      stat:
+        path: /Library/Java/JavaVirtualMachines/openjdk.jdk
+      register: java_symlink
+      changed_when: false
+    
+    - name: Create symlink for Java
+      command: sudo ln -sfn /usr/local/opt/openjdk/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk.jdk
+      become: true
+      ignore_errors: yes
+      when: not java_symlink.stat.exists
+    
+    # Step 13: Check if Jenkins is installed
+    - name: Check if Jenkins is installed
+      command: brew list | grep jenkins-lts
+      register: jenkins_installed
+      ignore_errors: yes
+      changed_when: false
+    
+    # Step 14: Install Jenkins using Homebrew
+    - name: Install Jenkins using Homebrew
+      homebrew:
+        name: jenkins-lts
+        state: present
+      when: jenkins_installed.rc != 0
+    
+    # Step 15: Check Jenkins service status
+    - name: Check Jenkins service status
+      command: brew services list | grep jenkins-lts
+      register: jenkins_status
+      changed_when: false
+      ignore_errors: yes
+    
+    # Step 16: Start Jenkins service if not running
+    - name: Start Jenkins service
+      command: brew services start jenkins-lts
+      when: jenkins_status.rc != 0 or "'started' not in jenkins_status.stdout"
+    
+    # Step 17: Wait for Jenkins to start
+    - name: Wait for Jenkins to start up
+      pause:
+        seconds: 30
+      when: jenkins_status.rc != 0 or "'started' not in jenkins_status.stdout"
+    
+    # Step 18: Check if Jenkins is reachable
+    - name: Check if Jenkins is reachable
+      uri:
+        url: http://localhost:8080
+        method: GET
+        timeout: 5
+        follow_redirects: yes
+      register: jenkins_reachable
+      ignore_errors: yes
+      changed_when: false
+      retries: 5
+      delay: 10
+      until: jenkins_reachable.status is defined and jenkins_reachable.status == 200
+    
+    # Step 19: Check for initial admin password
+    - name: Check if initial admin password file exists
+      stat:
+        path: ~/.jenkins/secrets/initialAdminPassword
+      register: admin_password_file
+      changed_when: false
+    
+    - name: Get Jenkins initial admin password
+      command: cat ~/.jenkins/secrets/initialAdminPassword
+      register: jenkins_password
+      when: admin_password_file.stat.exists
+      changed_when: false
+    
+    - name: Display Jenkins initial admin password
+      debug:
+        msg: "Jenkins initial admin password: {{ jenkins_password.stdout }}"
+      when: admin_password_file.stat.exists and jenkins_password is defined
+
+    # Step 20: Install Jenkins plugins
+    - name: Prüfe, ob Jenkins CLI JAR bereits existiert
+      stat:
+        path: /tmp/jenkins-cli.jar
+      register: jenkins_cli_jar
+      changed_when: false
+
+    - name: Lade Jenkins CLI JAR herunter
+      get_url:
+        url: http://localhost:8080/jnlpJars/jenkins-cli.jar
+        dest: /tmp/jenkins-cli.jar
+        mode: '0644'
+      when: not jenkins_cli_jar.stat.exists
+      ignore_errors: yes
+      register: download_cli
+      until: download_cli is success
+      retries: 5
+      delay: 10
+
+    - name: Erstelle .jenkins Verzeichnis für den Jenkins-Benutzernamen und Passwort
+      file:
+        path: ~/.jenkins
+        state: directory
+        mode: '0755'
+
+    - name: Erstelle temporäre Jenkins auth Datei
+      copy:
+        dest: ~/.jenkins/auth
+        content: "admin:{{ jenkins_password.stdout if jenkins_password is defined and jenkins_password.stdout is defined else 'admin' }}"
+        mode: '0600'
+      when: jenkins_reachable.status is defined and jenkins_reachable.status == 200
+      register: auth_file_created
+
+    - name: Lade verfügbare Jenkins Plugins
+      uri:
+        url: http://localhost:8080/pluginManager/api/json?depth=1
+        return_content: yes
+      register: jenkins_plugins
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Installiere benötigte Jenkins-Plugins
+      command: >
+        java -jar /tmp/jenkins-cli.jar -s http://localhost:8080/ -auth @~/.jenkins/auth install-plugin {{ item }} -deploy
+      with_items:
+        - git
+        - workflow-aggregator
+        - credentials
+        - ssh-credentials
+        - pipeline-stage-view
+      register: plugin_installation
+      changed_when: "'Plugin installed successfully' in plugin_installation.stdout"
+      when: 
+        - jenkins_reachable.status is defined
+        - jenkins_reachable.status == 200
+        - jenkins_plugins is success
+        - jenkins_plugins.content is defined
+      ignore_errors: yes
+
+    - name: Starte Jenkins neu nach Plugin-Installation
+      command: brew services restart jenkins-lts
+      when: plugin_installation.changed
+
+    - name: Warte nach Jenkins-Neustart
+      pause:
+        seconds: 30
+      when: plugin_installation.changed
+
+    # Step 21: Lösche temporäre auth-Datei nach der Plugin-Installation
+    - name: Lösche temporäre Jenkins auth Datei
+      file:
+        path: ~/.jenkins/auth
+        state: absent
+      when: auth_file_created.changed
+    
+    # Step 22: Provide Jenkins status information
+    - name: Provide Jenkins information
+      debug:
+        msg: 
+          - "Jenkins ist {{ 'erreichbar' if jenkins_reachable.status is defined and jenkins_reachable.status == 200 else 'nicht erreichbar' }} unter http://localhost:8080"
+          - "{{ 'Das initiale Admin-Passwort wurde nicht gefunden. Jenkins ist vermutlich bereits konfiguriert.' if not admin_password_file.stat.exists else '' }}"
+          - "{{ 'Plugins wurden erfolgreich installiert.' if plugin_installation.changed else 'Keine Änderungen an den Plugins.' }}"
