@@ -1,0 +1,130 @@
+---
+# Remove existing containers and images before deployment
+- name: Stop and remove existing container if it exists
+  community.docker.docker_container:
+    name: "{{ item[0].name }}{{ item[1].suffix }}"
+    state: absent
+    force_kill: yes
+  ignore_errors: yes
+
+- name: Remove existing Docker image
+  community.docker.docker_image:
+    name: "{{ item[0].name }}{{ item[1].suffix }}-image"
+    state: absent
+    force_absent: yes
+  ignore_errors: yes
+
+- name: Remove cached image archive
+  file:
+    path: "/opt/docker-images/{{ item[0].name }}{{ item[1].suffix }}.tar"
+    state: absent
+  ignore_errors: yes
+
+- name: Create local image repository directory if it doesn't exist
+  file:
+    path: "/opt/docker-images"
+    state: directory
+    mode: '0755'
+
+- name: Clone or update {{ item[0].name }} repository for {{ item[1].name }}
+  git:
+    repo: "git@github.com:splashapp/{{ item[0].name }}.git"
+    dest: "/opt/{{ item[0].name }}{{ item[1].suffix }}"
+    version: "{{ item[1].branch }}"
+    key_file: "/Users/oruess/.ssh/id_rsa"
+    accept_hostkey: yes
+    force: yes
+    update: yes
+
+- name: Generate dynamic labels
+  set_fact:
+    traefik_labels:
+      traefik.enable: "true"
+      traefik.http.routers.{{ item[0].name }}{{ item[1].suffix }}.rule: "Host(`{{ item[0].name }}{{ item[1].hostname_suffix }}`)"
+      traefik.http.services.{{ item[0].name }}{{ item[1].suffix }}.loadbalancer.server.port: "{{ item[1].port_start}}"
+
+- name: Set environment variable and image details
+  set_fact:
+    env_label: "{{ item[0].name }} {{ item[1].name }} Environment"
+    image_name: "{{ item[0].name }}{{ item[1].suffix }}-image"
+    image_tag: "latest"
+    image_archive: "/opt/docker-images/{{ item[0].name }}{{ item[1].suffix }}.tar"
+
+- name: Check app.py exists in repository
+  stat:
+    path: "/opt/{{ item[0].name }}{{ item[1].suffix }}/app/app.py"
+  register: app_py_stat
+
+- name: Display app.py check result
+  debug:
+    msg: "app.py existiert: {{ app_py_stat.stat.exists }}"
+
+- name: Create or update Dockerfile with correct port
+  copy:
+    dest: "/opt/{{ item[0].name }}{{ item[1].suffix }}/Dockerfile"
+    content: |
+      FROM python:3.10-slim
+      WORKDIR /app
+      RUN pip install --no-cache-dir flask
+      COPY . /app/
+      EXPOSE {{ item[1].port_start }}
+      ENV ENV_LABEL="{{ env_label }}"
+      ENV PORT="{{ item[1].port_start }}"
+      CMD ["sh", "-c", "python /app/app/app.py --port=${PORT}"]
+  when: true  # Immer ausführen, um sicherzustellen, dass die Ports korrekt sind
+
+- name: Build Docker image for {{ item[0].name }} in {{ item[1].name }}
+  community.docker.docker_image:
+    name: "{{ image_name }}"
+    tag: "{{ image_tag }}"
+    source: build
+    state: present
+    build:
+      path: "/opt/{{ item[0].name }}{{ item[1].suffix }}"
+      pull: no
+  register: build_result
+
+# Umfassenderer Debug - alle Docker Images anzeigen
+- name: List all Docker images
+  shell: "docker images"
+  register: all_docker_images
+  changed_when: false
+
+- name: Debug all Docker images
+  debug:
+    var: all_docker_images.stdout_lines
+
+- name: Create traefik-network if it does not exist
+  community.docker.docker_network:
+    name: traefik-network
+    driver: bridge
+    state: present
+
+- name: Deploy {{ item[0].name }} container for {{ item[1].name }} with image {{ image_name }}
+  community.docker.docker_container:
+    name: "{{ item[0].name }}{{ item[1].suffix }}"
+    image: "{{ image_name }}:{{ image_tag }}"
+    pull: no
+    state: started
+    restart_policy: unless-stopped
+    env:
+      ENV_LABEL: "{{ item[0].name }} {{ item[1].name }} Environment"
+      PORT: "{{ item[1].port_start }}"
+    ports:
+      - "{{ item[1].port_start }}:{{ item[1].port_start }}"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.{{ item[0].name }}{{ item[1].suffix }}.rule: "Host(`{{ item[0].name }}{{ item[1].hostname_suffix }}`)"
+      traefik.http.services.{{ item[0].name }}{{ item[1].suffix }}.loadbalancer.server.port: "{{ item[1].port_start }}"
+    networks:
+      - name: traefik-network
+  register: container_result
+
+# Nach erfolgreicher Container-Erstellung das Image speichern
+- name: Save Docker image to local archive after successful deployment
+  community.docker.docker_image:
+    name: "{{ image_name }}:{{ image_tag }}"
+    archive_path: "{{ image_archive }}"
+    source: local
+  when: container_result is success
+  ignore_errors: yes

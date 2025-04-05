@@ -1,0 +1,47 @@
+---
+- name: Setup Multi-Environment CI/CD for Multiple Applications
+  hosts: all
+  become: true
+
+  vars:
+    environments:
+      - name: development
+        suffix: "-dev"
+        hostname_suffix: ".dev.localhost"
+        port_start: 5100
+        branch: "develop"  # Development-Branch
+
+      - name: release
+        suffix: "-release"
+        hostname_suffix: ".release.localhost"
+        port_start: 5200
+        branch: "release"  # Release/Integration-Branch
+
+      - name: production
+        suffix: "-prod"
+        hostname_suffix: ".prod.localhost"
+        port_start: 5300
+        branch: "main"     # Production-Branch
+
+    apps:
+      - name: app_test
+        repository: "https://github.com/splashapp/app_test.git"
+
+    traefik_version: "v2.9"
+
+  tasks:
+
+      # Step 5 (Optional): Configure Ansible to use the virtual environment's Python interpreter
+    - name: Set ansible_python_interpreter to virtual environment's Python
+      set_fact:
+        ansible_python_interpreter: "/Users/oruess/python_venv/bin/python"
+
+    # Other tasks remain unchanged...
+
+    # 4. Clone and Deploy Applications for Each Environment Dynamically
+    - name: Deploy applications for each environment
+      include_tasks: deploy_app.yml
+      loop: "{{ apps | product(environments) | list }}"
+      loop_control:
+        label: "{{ item.0.name }} in {{ item.1.name }}"
+        
